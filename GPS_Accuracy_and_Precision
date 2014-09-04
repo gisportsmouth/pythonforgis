@@ -1,6 +1,6 @@
 #-------------------------------------------------------------------------------------------------------------------#
 # Creator: M.Schaefer, GIS Manager, University of Portsmouth                                                        #
-# Title: Comparison of accuracy and precision of GPS Data                                                           #
+# Title: Comparison of accuracy and Relative accuracy of GPS Data                                                   #
 # Purpose: To test GPS data against accurate data derived from Survey GPS,                                          #
 #           Total Station or other accurate data set                                                                #
 # Data requirements:                                                                                                #
@@ -18,7 +18,7 @@
 #      id,horizontal_error,azimuth_of_error,device,occupation_time,WAAS,GLONASS                                     #
 #                       This file gives the distance and bearing between the observed point                         #
 #                       and the accurate point.                                                                     #
-#                   2. [input file name]Precision.csv                                                               #
+#                   2. [input file name]Relative accuracy.csv                                                       #
 #      from_ID_to_ID, horizontal_error, RMS_horizontal_error, azimuth_error,accurate_distance, accurate_azimuth,    #
 #            device,occupation_time,WAAS,GLONASS                                                                    #
 #                       This file shows what the difference is between the expected distance                        #
@@ -26,8 +26,8 @@
 #                        and what the error in bearing between the respective points is.                            #
 #                   3. [input file name]SummaryAccuracy                                                             #
 #                       This file gives summary statistics of the accuracy calculated above.                        #
-#                   4. [input file name]SummaryPrecision                                                            #
-#                       This file gives summary statistics of the precision calculated above.                       #
+#                   4. [input file name]SummaryRelative accuracy                                                    #
+#                       This file gives summary statistics of the Relative accuracy calculated above.               #
 #-------------------------------------------------------------------------------------------------------------------#
 import sys, csv, math, datetime, os
 import pandas as pd
@@ -77,19 +77,19 @@ def procRun():
         #process accuracy
         dict_GPSAccuracy = funcTestAcc(acc_Coords, test_Coords)
         print 'Accuracy calculated'
-        #process precision
+        #process relative accuracy
         dict_GPSPrec = funcTestPrec(acc_Coords, test_Coords)
-        print 'Precision calculated'
+        print 'Relative accuracy calculated'
         #output to file with metadata
         meta = [gps_Device,gps_Occ,gps_WAAS,gps_GLONASS]
         print 'Metadata created'
         procWriter(dict_GPSAccuracy, gps_Test, meta, 'Accuracy')
         print 'Accuracy written'
-        procWriter(dict_GPSPrec, gps_Test, meta, 'Precision')
-        print 'Precision Written'
+        procWriter(dict_GPSPrec, gps_Test, meta, 'Relative_accuracy')
+        print 'Relative accuracy Written'
         #Statistics
         procStats(dict_GPSAccuracy, gps_Test, meta, 'Accuracy')
-        procStats(dict_GPSPrec, gps_Test, meta, 'Precision')
+        procStats(dict_GPSPrec, gps_Test, meta, 'Relative_accuracy')
     else:
         print 'Check data structure of gpx file. Expected tags are <wpt><ele><time><name> or <wpt><time><name>'
         print 'Test coordinates NOT loaded: ' + gps_Test 
@@ -97,7 +97,7 @@ def procRun():
     #   
    ####################################################################    
   # Descriptive statistics output
- # Will take a dictionary of either accuracy or precision
+ # Will take a dictionary of either accuracy or Relative accuracy
 # Writes file to a new output directory in original data file location  
 def procStats(in_Dict, in_File, in_Meta, in_Type):
     df = pd.DataFrame(in_Dict)
@@ -115,7 +115,7 @@ def procStats(in_Dict, in_File, in_Meta, in_Type):
         foutput.write('Device: ' + in_Meta[0] + ' Occupation time: ' + str(in_Meta[1]) + ' WAAS: ' + in_Meta[2] + ' GLONASS: ' + in_Meta[3] + '\n')
         stats = funcDescStats(dft)
         foutput.write(stats)
-        if in_Type == 'Precision':
+        if in_Type == 'Relative_accuracy':
             foutput.write('RMS Stats\n')
             stats = funcDescStats(dft_RMS)
             foutput.write(stats)
@@ -140,7 +140,7 @@ def funcDescStats(panda_In):
     #   
    ####################################################################    
   # CSV output   
- # Will take a dictionary of either accuracy or precision
+ # Will take a dictionary of either accuracy or Relative accuracy
 # Writes file to a new output directory in original data file location  
 def procWriter(in_Dict, in_File, in_Meta, in_Type):
     #establish working and output directory from input file
@@ -183,7 +183,7 @@ def funcTestAcc(acc_In, test_In):
     
     #   
    ####################################################################    
-  # Precision calculator against accurate dataset - how far points should be apart against how far they are apart and angle of deviation   
+  # Relative accuracy calculator against accurate dataset - how far points should be apart against how far they are apart and angle of deviation   
  # Will take two dictionaries with common point id's {id:[lat, lon (,other)} as strings
 # Returns dictionary {id:[accurate_distance, error_in_distance, deviation in azimuth]}   
 def funcTestPrec(acc_In, test_In):
@@ -206,7 +206,7 @@ def funcTestPrec(acc_In, test_In):
     
     #   
    ####################################################################    
-  # Precision helper to calculate distance and bearing from every point to every other point in a dict
+  # Relative accuracy helper to calculate distance and bearing from every point to every other point in a dict
  # Will take a dictionary with point id's {id:[lat, lon (,other)} as strings
 # Returns dictionary {from_id_to_id:[distance, bearing]} list elements                
 def funcEveryPoint(dict_In):
