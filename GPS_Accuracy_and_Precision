@@ -1,0 +1,378 @@
+#-------------------------------------------------------------------------------------------------------------------#
+# Creator: M.Schaefer, GIS Manager, University of Portsmouth                                                        #
+# Title: Comparison of accuracy and precision of GPS Data                                                           #
+# Purpose: To test GPS data against accurate data derived from Survey GPS,                                          #
+#           Total Station or other accurate data set                                                                #
+# Data requirements:                                                                                                #
+#       1. An accurate WGS84 lat/lon point data set as CSV in the format:                                           #
+#             id,lat,lon,elevation(,code) with header                                                               #
+#       2. A WGS84 lat/lon point data set to be tested with the same point IDs                                      #
+#           in the format:                                                                                          #
+#               a. CSV id,lat,lon,elevation(,code) with header                                                      #
+#               b. A GPX waypoint file <wpt><ele><time><name>                                                       #
+#                   or <wpt><time><name>                                                                            #
+# Required Modules: sys, csv, math, datetime, os, pandas, ElementTree                                               #
+# Data output: The code creates an output subfolder and creates the                                                 #
+#               following files:                                                                                    #
+#                   1. [input file name]Accuracy.csv                                                                #
+#      id,horizontal_error,azimuth_of_error,device,occupation_time,WAAS,GLONASS                                     #
+#                       This file gives the distance and bearing between the observed point                         #
+#                       and the accurate point.                                                                     #
+#                   2. [input file name]Precision.csv                                                               #
+#      from_ID_to_ID, horizontal_error, RMS_horizontal_error, azimuth_error,accurate_distance, accurate_azimuth,    #
+#            device,occupation_time,WAAS,GLONASS                                                                    #
+#                       This file shows what the difference is between the expected distance                        #
+#                        between every points and the measured distance between those points                        #
+#                        and what the error in bearing between the respective points is.                            #
+#                   3. [input file name]SummaryAccuracy                                                             #
+#                       This file gives summary statistics of the accuracy calculated above.                        #
+#                   4. [input file name]SummaryPrecision                                                            #
+#                       This file gives summary statistics of the precision calculated above.                       #
+#-------------------------------------------------------------------------------------------------------------------#
+import sys, csv, math, datetime, os
+import pandas as pd
+from xml.etree.ElementTree import ElementTree
+  #####################################################################
+ #
+# Main calling block
+def procMain():
+ try:
+  procRun()
+ except Exception, err:
+  sys.stderr.write('ERROR: %s\n' % str(err))
+  return 1
+ finally:
+    pass
+  
+def procRun():
+    print 'Running...'
+    gps_Acc = raw_input('Enter Accurate GPS data full path: ')  
+    gps_Test = raw_input('Enter Test GPS data full path: ')  
+    gps_Device = raw_input('Enter Test GPS device description: ')
+    gps_Occ = raw_input('Enter Observation time for each point: ')
+    gps_WAAS = raw_input('Enter WAAS status: ')
+    gps_GLONASS = raw_input('Enter GLONASS status: ')
+    #Check Data Entry for gps_WAAS
+    gps_WAAS = gps_WAAS.upper()
+    if not gps_WAAS:
+        gps_WAAS = 'NA'
+    elif gps_WAAS not in ['ON','OFF']:
+        gps_WAAS = 'NA'
+    #Check Data Entry for gps_GLONASS
+    gps_GLONASS = gps_GLONASS.upper()
+    if not gps_GLONASS:
+        gps_GLONASS = 'NA'
+    elif gps_GLONASS not in ['ON','OFF']:
+        gps_GLONASS = 'NA'
+    #load accurate coordinates
+    acc_Coords = funcImportCSV(gps_Acc)
+    print 'Accurate coordinates loaded'
+    #load coordinates to test as csv or gpx
+    if gps_Test[-3:] == 'gpx':
+        test_Coords = funcImportGPX(gps_Test)
+    else:
+        test_Coords = funcImportCSV(gps_Test)
+    if test_Coords:
+        print 'Test coordinates loaded'
+        #process accuracy
+        dict_GPSAccuracy = funcTestAcc(acc_Coords, test_Coords)
+        print 'Accuracy calculated'
+        #process precision
+        dict_GPSPrec = funcTestPrec(acc_Coords, test_Coords)
+        print 'Precision calculated'
+        #output to file with metadata
+        meta = [gps_Device,gps_Occ,gps_WAAS,gps_GLONASS]
+        print 'Metadata created'
+        procWriter(dict_GPSAccuracy, gps_Test, meta, 'Accuracy')
+        print 'Accuracy written'
+        procWriter(dict_GPSPrec, gps_Test, meta, 'Precision')
+        print 'Precision Written'
+        #Statistics
+        procStats(dict_GPSAccuracy, gps_Test, meta, 'Accuracy')
+        procStats(dict_GPSPrec, gps_Test, meta, 'Precision')
+    else:
+        print 'Check data structure of gpx file. Expected tags are <wpt><ele><time><name> or <wpt><time><name>'
+        print 'Test coordinates NOT loaded: ' + gps_Test 
+
+    #   
+   ####################################################################    
+  # Descriptive statistics output
+ # Will take a dictionary of either accuracy or precision
+# Writes file to a new output directory in original data file location  
+def procStats(in_Dict, in_File, in_Meta, in_Type):
+    df = pd.DataFrame(in_Dict)
+    dft = df.T[0]
+    dft_RMS = df.T[1]
+    #establish working and output directory from input file
+    working_dir = os.path.dirname(in_File)
+    out_dir = os.path.join(working_dir, 'output')
+    #make output directory
+    if os.path.exists(out_dir) == False:
+        os.mkdir(out_dir)  
+    fname = (os.path.basename(in_File))[:-4] + 'Summary' + in_Type + '.txt'
+    with open(os.path.join(out_dir, fname), mode = 'w') as foutput:
+        foutput.write('Type of analysis: ' + in_Type + '\n')
+        foutput.write('Device: ' + in_Meta[0] + ' Occupation time: ' + str(in_Meta[1]) + ' WAAS: ' + in_Meta[2] + ' GLONASS: ' + in_Meta[3] + '\n')
+        stats = funcDescStats(dft)
+        foutput.write(stats)
+        if in_Type == 'Precision':
+            foutput.write('RMS Stats\n')
+            stats = funcDescStats(dft_RMS)
+            foutput.write(stats)
+
+    #   
+   ####################################################################    
+  # Descriptive statistics output helper
+ # Will take a panda
+# Returns descriptive statistics as formatted text
+def funcDescStats(panda_In):
+    out_Text = ''
+    out_Text = out_Text + 'Count: ' + str(panda_In.count()) + '\n'
+    out_Text = out_Text + 'Mean: ' + str(panda_In.mean()) + '\n'
+    out_Text = out_Text + 'Median: ' + str(panda_In.median()) + '\n'
+    out_Text = out_Text + 'Max: ' + str(panda_In.max()) + '\n'
+    out_Text = out_Text + 'Min: ' + str(panda_In.min()) + '\n'
+    out_Text = out_Text + 'Standard Deviation: ' + str(panda_In.std()) + '\n'
+    out_Text = out_Text + 'Mean + 2 Standard Deviations: ' + str(panda_In.mean() + 2 * panda_In.std()) + ', i.e. 95% max error\n'
+    out_Text = out_Text + 'Mean + 2 Standard Deviations: ' + str(panda_In.mean() + 3 * panda_In.std()) + ', i.e. 99% max error\n'
+    return out_Text
+ 
+    #   
+   ####################################################################    
+  # CSV output   
+ # Will take a dictionary of either accuracy or precision
+# Writes file to a new output directory in original data file location  
+def procWriter(in_Dict, in_File, in_Meta, in_Type):
+    #establish working and output directory from input file
+    working_dir = os.path.dirname(in_File)
+    out_dir = os.path.join(working_dir, 'output')
+    #make output directory
+    if os.path.exists(out_dir) == False:
+        os.mkdir(out_dir)  
+    fname = (os.path.basename(in_File))[:-4] + in_Type + '.csv'
+    ofile = open(os.path.join(out_dir, fname),'wb')    
+    writer = csv.writer(ofile, delimiter=',', quotechar='', quoting=csv.QUOTE_NONE)
+    if in_Type == 'Accuracy':
+        writer.writerow(['point','hor_err','azimuth','device','occ_time','waas','glonass'])
+    else:
+        writer.writerow(['point','dist_err','dist_err_rms','azimuth_err','acc_distance','acc_azimuth','device','occ_time','waas','glonass'])
+    for i in in_Dict:
+        row = [i]
+        for j in in_Dict[i]:   
+            row.append(j)
+        #add metadata
+        for g in in_Meta:
+            row.append(g)
+        writer.writerow(row)
+        
+    #   
+   ####################################################################    
+  # Distance and bearing calculator against accurate dataset   
+ # Will take two dictionaries with common point id's {id:[lat, lon (,other)} as strings
+# Returns dictionary {id:[distance in metres, bearing]}   
+def funcTestAcc(acc_In, test_In):
+    # A list to hold the accuracy results
+    #
+    dict = {}
+    for i in test_In:
+        if i in acc_In:
+            distance_m = funcDistVincenty(float(acc_In[i][0]),float(acc_In[i][1]),float(test_In[i][0]),float(test_In[i][1]))
+            bearing = funcBearing(float(acc_In[i][0]),float(acc_In[i][1]),float(test_In[i][0]),float(test_In[i][1]))
+            dict.update({i:[distance_m, bearing]})
+    return dict
+    
+    #   
+   ####################################################################    
+  # Precision calculator against accurate dataset - how far points should be apart against how far they are apart and angle of deviation   
+ # Will take two dictionaries with common point id's {id:[lat, lon (,other)} as strings
+# Returns dictionary {id:[accurate_distance, error_in_distance, deviation in azimuth]}   
+def funcTestPrec(acc_In, test_In):
+    dict_Prec = funcEveryPoint(acc_In)
+    dict_Test = funcEveryPoint(test_In)
+    dict = {}
+    for i in dict_Prec:
+        if i in dict_Test:
+            diff_xy = dict_Prec[i][0] - dict_Test[i][0]
+            diff_xy_rms = math.sqrt(math.pow(diff_xy,2))
+            #diff_az = dict_Prec[i][1] - dict_Test[i][1]
+            if dict_Prec[i][1] > dict_Test[i][1]:
+                diff_az = dict_Prec[i][1] - dict_Test[i][1]
+            else:
+                diff_az = dict_Test[i][1] - dict_Prec[i][1]            
+            if diff_az > 180:
+                diff_az = 360 - diff_az
+            dict.update({i:[diff_xy, diff_xy_rms, diff_az, dict_Prec[i][0], dict_Prec[i][1]]})
+    return dict
+    
+    #   
+   ####################################################################    
+  # Precision helper to calculate distance and bearing from every point to every other point in a dict
+ # Will take a dictionary with point id's {id:[lat, lon (,other)} as strings
+# Returns dictionary {from_id_to_id:[distance, bearing]} list elements                
+def funcEveryPoint(dict_In):
+    dict = {}
+    done = []
+    for i in dict_In:
+        for j in dict_In:
+            if i != j and not j in done:
+                distance_m = funcDistVincenty(float(dict_In[i][0]),float(dict_In[i][1]),float(dict_In[j][0]),float(dict_In[j][1]))
+                bearing = funcBearing(float(dict_In[i][0]),float(dict_In[i][1]),float(dict_In[j][0]),float(dict_In[j][1]))
+                dict.update({i + '_' + j:[distance_m, bearing]})
+        done.append(i)
+    return dict
+    
+    #   
+   ####################################################################    
+  # CSV helper      
+ # Will take a csv file (id, lat, lon (, other)) and s
+# Returns dictionary {id:[lat, lon (,other)} list elements as strings           
+def funcImportCSV(file_In):
+    dict = {}
+    with open(file_In, 'rb') as f:
+        reader = csv.reader(f)
+        next(f)
+        for row in reader:
+            dict.update({row[0]:row[1:]})
+    return(dict)
+  
+    #
+   #####################################################################
+  #GPX helper -  
+ # Will go through a gpx file and process waypoints to xy
+# Returns dictionary {id:[lat,lon,elevation,time]}
+def funcImportGPX(gxp_doc):
+    trkpt_count = 0
+    #set up temporary list for list set 
+    temp_output = []
+    #set up list for final output
+    output = {}
+    #create an XML tree
+    tree = ElementTree()
+    #parse the xml file given as parameter 
+    tree.parse(gxp_doc)
+    #iterate through elements in XML tree
+    #set flag if elevation is missing
+    chkEle = 0
+    for elem in tree.iter():
+        #only process trkpt entries
+        if 'wpt' in elem.tag:                               #<wpt lat="37.5048186164" lon="15.0970037095">
+            temp_output.append(elem.attrib['lat'])          #temp_output[0]
+            temp_output.append(elem.attrib['lon'])          #temp_output[1]
+            trkpt_count += 1
+        elif 'ele' in elem.tag:                             #<ele>18.40</ele>
+            temp_output.append(elem.text)                   #temp_output[2]
+            chkEle = 1
+        elif 'time' in elem.tag and trkpt_count != 0:       #<time>2014-04-03T08:18:04Z</time>
+            #function creates a datetime element
+            temp_output.append(funcToDateTime(elem.text))   #temp_output[3] or [2] if ele is missing
+        elif 'name' in elem.tag:
+            temp_output.append(elem.text)                  #temp_output[4] or [3] if ele is missing
+        #in order to only process the elements above complete set when time is reached and reset variables for list set
+        if chkEle == 1 and len(temp_output) == 5:
+            output.update({temp_output[4]:[temp_output[0],temp_output[1],temp_output[2],temp_output[3]]})
+            temp_output = []
+        elif chkEle == 0 and len(temp_output) == 4:
+            output.update({temp_output[3]:[temp_output[0],temp_output[1],temp_output[2]]})
+            temp_output = []        
+    return output
+    
+   #
+  ####################################################################
+ #GPX helper - converts gpx date element (2014-04-03T08:18:04Z) to a datetime for processing and adds GMT offset
+#
+def funcToDateTime(GPX_time):
+    #replace all delimiters for splitting
+    time_list = GPX_time.replace('-',' ').replace('T',' ').replace(':',' ').replace('Z','').split()
+    #use list comprehension to convert to int
+    time_list = [int(x) for x in time_list]
+    #convert to datetime and add GMT offset for local time
+    t_gxp = datetime.datetime(time_list[0],time_list[1],time_list[2],time_list[3],time_list[4],time_list[5])
+    return t_gxp
+   
+    #   
+   ####################################################################    
+  # Bearing helper - adapted from:     
+ # https://gist.github.com/jeromer/2005586
+# Returns bearing 
+def funcBearing(latitude1,longitude1,latitude2,longitude2):
+    '''
+    Calculates the bearing between two points. 
+    The formulae used is the following:
+        ? = atan2(sin(?long).cos(lat2),
+                  cos(lat1).sin(lat2) - sin(lat1).cos(lat2).cos(?long)) 
+    :Parameters:
+      - `pointA: The tuple representing the latitude/longitude for the
+        first point. Latitude and longitude must be in decimal degrees
+      - `pointB: The tuple representing the latitude/longitude for the
+        second point. Latitude and longitude must be in decimal degrees 
+    :Returns:
+      The bearing in degrees 
+    :Returns Type:
+      float
+    '''
+    pointA = (latitude1, longitude1)
+    pointB = (latitude2, longitude2)
+    if (type(pointA) != tuple) or (type(pointB) != tuple):
+        raise TypeError("Only tuples are supported as arguments") 
+    lat1 = math.radians(pointA[0])
+    lat2 = math.radians(pointB[0]) 
+    diffLong = math.radians(pointB[1] - pointA[1]) 
+    x = math.sin(diffLong) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1)
+            * math.cos(lat2) * math.cos(diffLong)) 
+    initial_bearing = math.atan2(x, y) 
+    # Now we have the initial bearing but math.atan2 return values
+    # from -180 to + 180 which is not what we want for a compass bearing
+    # The solution is to normalize the initial bearing as shown below
+    initial_bearing = math.degrees(initial_bearing)
+    compass_bearing = (initial_bearing + 360) % 360
+    return compass_bearing
+ 
+    #   
+   ####################################################################    
+  # Distance helper using Vincenty formula - adapted from:     
+ # Lawhead, J. (2013) Learning GeoSpatial Analysis with Python. Packt Publishing. eBook.
+# Code adapted from Chris Veness http://www.movable-type.co.uk/scripts/latlong.html made available for general use 
+# Returns distance in metres
+def funcDistVincenty(latitude1,longitude1,latitude2,longitude2):   
+    # Ellipsoid Parameters
+    # Example is WGS84
+    a = 6378137 #semi-major axis
+    f = 1/298.257223563 # inverse flattening
+    b = abs((f*a)-a) # semi-minor axis
+    L = math.radians(longitude2-longitude1)
+    U1 = math.atan((1-f) * math.tan(math.radians(latitude1)))
+    U2 = math.atan((1-f) * math.tan(math.radians(latitude2)))
+    sinU1 = math.sin(U1)
+    cosU1 = math.cos(U1)
+    sinU2 = math.sin(U2)
+    cosU2 = math.cos(U2)
+    for i in range(100):
+      sinL = math.sin(L)
+      cosL = math.cos(L)
+      sinSigma = math.sqrt((cosU2*sinL)**2 + (cosU1*sinU2-sinU1*cosU2*cosL)**2)
+      if (sinSigma==0):
+        distance = 0 #coincident points
+        break
+      cosSigma = sinU1*sinU2 + cosU1*cosU2*cosL
+      sigma = math.atan2(sinSigma, cosSigma)
+      sinAlpha = cosU1 * cosU2 * sinL / sinSigma
+      cosSqAlpha = 1 - sinAlpha**2
+      cos2SigmaM = cosSigma - 2*sinU1*sinU2/cosSqAlpha
+      if math.isnan(cos2SigmaM): cos2SigmaM = 0 # equatorial line
+      C = f/16*cosSqAlpha*(4+f*(4-3*cosSqAlpha))
+      LP = L
+      lam = L + (1-C) * f * sinAlpha * \
+      (sigma + C*sinSigma*(cos2SigmaM+C*cosSigma*(-1+2*cos2SigmaM*cos2SigmaM)))
+      if not abs(lam-LP) > 1e-12:
+        break
+    uSq = cosSqAlpha * (a**2 - b**2) / b**2
+    A = 1 + uSq/16384*(4096+uSq*(-768+uSq*(320-175*uSq)))
+    B = uSq/1024 * (256+uSq*(-128+uSq*(74-47*uSq)))
+    deltaSigma = B*sinSigma*(cos2SigmaM+B/4*(cosSigma*(-1+2*cos2SigmaM*cos2SigmaM) - \
+    B/6*cos2SigmaM*(-3+4*sinSigma*sinSigma)*(-3+4*cos2SigmaM*cos2SigmaM)))
+    s = b*A*(sigma-deltaSigma)
+    return s
+ 
+if __name__ =="__main__":
+	procMain()
